@@ -193,13 +193,14 @@ if __name__ == '__main__':
         sip_cfg['cseq'] += 1
 
         print("[-] Sending INVITE...")
+        call_id = hashlib.md5(f"{sip_cfg['call_id']},{time.time()}".encode()).hexdigest()
         data_to_send = create_invite_header(nonce, realm).encode()
         print("sending invite data:\n", str(data_to_send).replace('\\r\\n', '\n'))
         sock.sendto(data_to_send, (sip_cfg['sip_server_addr'], sip_cfg['sip_server_port']))
         data, _ = sock.recvfrom(4096)
         print("[<<] INVITE response:\n", data.decode())
 
-        time.sleep(10)
+        time.sleep(5)
         print("[+] Sending BYE ...")
         data_to_send = create_bye_header().encode()
         print("sending BYE data:\n", str(data_to_send).replace('\\r\\n', '\n'))
