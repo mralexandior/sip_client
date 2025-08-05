@@ -14,7 +14,7 @@ sip_cfg = {
     'password': '1000',
     'to_user': '1002',
     'call_id': '1000@10.120.0.115',
-    'tag': f'{random.randint(1000, 9999)}',
+    'tag': '',
     'branch': f'z9hG4bK-{random.randint(100000, 999999)}',
     'cseq': 1,
     'contact': '',
@@ -133,10 +133,10 @@ def create_invite_header(nonce=None, realm=None):
 
 def create_bye_header():
     res = []
-    res.append(f'BYE sip:{sip_cfg["local_ip"]}:{sip_cfg["local_port"]} SIP/2.0')
+    res.append(f'BYE sip:{sip_cfg["sip_server_addr"]}:{sip_cfg["sip_server_port"]} SIP/2.0')
     res.append(f'Via: SIP/2.0/UDP {sip_cfg["local_ip"]}:{sip_cfg["local_port"]};branch={sip_cfg["branch"]}')
     res.append('Max-Forwards: 70')
-    res.append(f'To: "{sip_cfg["to_user"]}" <sip:{sip_cfg["username"]}@{sip_cfg["sip_server_addr"]}>') # tag?
+    res.append(f'To: <sip:{sip_cfg["to_user"]}@{sip_cfg["sip_server_addr"]}>') # tag?
     res.append(f'From: <sip:{sip_cfg["username"]}@{sip_cfg["local_ip"]}>;tag={sip_cfg["tag"]}')
     res.append(f'Call-ID: {call_id}')
     res.append(f'CSeq: {sip_cfg["cseq"]} BYE')
@@ -146,14 +146,79 @@ def create_bye_header():
     return '\r\n'.join(res)
 
 
+def get_answer_type(answer_data):
+    code_types = {
+        '100 Trying': ['continue', 'info', 'wait next'],
+        '180 Ringing': ['continue', 'info', 'wait next'],
+        '181 Call Is Being Forwarded': ['continue', 'info', 'wait next'],
+        '182 Queued': ['continue', 'info', 'wait next'],
+        '183 Session Progress': ['continue', 'info', 'wait next'],
+        
+        '200 OK': ['end', 'success', 'need ACK'],
+        '202 Accepted': ['end', 'success', 'need ACK'],
+        '204 No Notification': ['end', 'success', 'need ACK'],
+        
+        '300 Multiple Choices': ['end', 'success', 'need alternative'],
+        '301 Moved Permanently': ['end', 'success', 'need alternative'],
+        '302 Moved Temporarily': ['end', 'success', 'need alternative'],
+        '305 Use Proxy': ['end', 'success', 'need proxy'],
+        '380 Alternative Service': ['end', 'success', 'need alternative'],
+
+        '400 Bad Request': ['end', 'error', 'stop'],
+        '401 Unauthorized': ['end', 'error', 'stop'],
+        '403 Forbidden': ['end', 'error', 'stop'],
+        '404 Not Found': ['end', 'error', 'stop'],
+        '405 Method Not Allowed': ['end', 'error', 'stop'],
+        '406 Not Acceptable': ['end', 'error', 'stop'],
+        '407 Proxy Authentication Request': ['end', 'error', 'stop'],
+        '408 Request Timeout': ['end', 'error', 'stop'],
+        '410 Gone': ['end', 'error', 'stop'],
+        '415 Unsupported Media Type': ['end', 'error', 'stop'],
+        '416 Unsupported URI Scheme': ['end', 'error', 'stop'],
+        '420 Bad Extension': ['end', 'error', 'stop'],
+        '421 Extension Required': ['end', 'error', 'stop'],
+        '423 Interval To Brief': ['end', 'error', 'stop'],
+        '480 Temporarily Unavailable': ['end', 'error', 'stop'],
+        '481 Call/Transaction Does Not Exist': ['end', 'error', 'stop'],
+        '482 Loop Detected': ['end', 'error', 'stop'],
+        '483 Too Many Hops': ['end', 'error', 'stop'],
+        '484 Address Incomplete': ['end', 'error', 'stop'],
+        '485 Ambiguous': ['end', 'error', 'stop'],
+        '486 Busy Here': ['end', 'error', 'stop'],
+        '487 Request Terminated': ['end', 'error', 'stop'],
+        '488 Not Acceptable Here': ['end', 'error', 'stop'],
+        '491 Request Pending': ['end', 'error', 'stop'],
+        '493 Undecipherable': ['end', 'error', 'stop'],
+
+        '500 Server Internal Error': ['end', 'error', 'stop'],
+        '501 Not Implemented': ['end', 'error', 'stop'],
+        '502 Bad Gateway': ['end', 'error', 'stop'],
+        '503 Service Unavailable': ['end', 'error', 'stop'],
+        '504 Server Timeout': ['end', 'error', 'stop'],
+        '505 Version Not Supported': ['end', 'error', 'stop'],
+        '513 Message Too Large': ['end', 'error', 'stop'],
+
+        '600 Busy Everywhere': ['end', 'error', 'stop'],
+        '603 Decline': ['end', 'error', 'stop'],
+        '604 Does Not Exist Anywhere': ['end', 'error', 'stop'],
+        '606 Not Acceptable': ['end', 'error', 'stop']
+    }
+
+    decoded_answer = answer_data.decode()
+    for i in code_types.keys():
+        if i in decoded_answer:
+            return code_types[i]
+    return ['unk', 'unk', 'stop']
+
 
 if __name__ == '__main__':
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((sip_cfg['local_ip'], sip_cfg['local_port']))
-    sock.settimeout(5)
+    sock.settimeout(8)
 
     sdp = create_sdp()
     call_id = hashlib.md5(f"{sip_cfg['call_id']},{time.time()}".encode()).hexdigest()
+    sip_cfg['tag'] = str(random.randint(1000, 9999))
 
     print("[+] Sent initial REGISTER")
     data_to_send = create_register_header().encode()
@@ -198,7 +263,9 @@ if __name__ == '__main__':
         print("sending invite data:\n", str(data_to_send).replace('\\r\\n', '\n'))
         sock.sendto(data_to_send, (sip_cfg['sip_server_addr'], sip_cfg['sip_server_port']))
         data, _ = sock.recvfrom(4096)
-        print("[<<] INVITE response:\n", data.decode())
+        print("\n[<<] INVITE response:\n", data.decode())
+        data, _ = sock.recvfrom(4096)
+        print("\n[<<] second response:\n", data.decode())
 
         time.sleep(5)
         print("[+] Sending BYE ...")
