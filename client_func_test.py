@@ -148,6 +148,16 @@ def create_bye_header():
 
 
 def create_ack_header():
+    res = []
+    res.append(f'ACK sip:{sip_cfg["username"]}@{sip_cfg["local_ip"]}:{sip_cfg["local_port"]} SIP/2.0')
+    res.append(f'Via: SIP/2.0/UDP {sip_cfg["sip_server_addr"]}:{sip_cfg["sip_server_port"]}') # rport, branch
+    res.append(f'From: <sip:{sip_cfg["to_user"]}@{sip_cfg["sip_server_addr"]}>;tag={sip_cfg["tag_from"]}')
+    res.append(f'To: <sip:')
+
+    return '\r\n'.join(res)
+
+
+def create_ok_answer():
     pass
 
 
@@ -216,7 +226,15 @@ def get_answer_type(answer_data):
 
 
 def parse_answer(answer):
-    pass
+    headers_list = answer.split('\r\n')
+    res = {}
+    for n, header in enumerate(headers_list):
+        if n == 0:
+            items = re.split(r'^([A-Z]+)\s(.+)', header)
+        else:
+            items = re.split(r'^(.+):\s(.+)', header)
+        res[items[1]] = items[2]
+    return res
 
 
 if __name__ == '__main__':
@@ -254,7 +272,7 @@ if __name__ == '__main__':
                 data_to_send = create_register_header(nonce, realm).encode()
                 print('sending data:\n', str(data_to_send).replace('\\r\\n', '\n'))
                 sock.sendto(data_to_send, (sip_cfg['sip_server_addr'], sip_cfg['sip_server_port']))
-                data, _ = sock.recvfrom(4096)
+                data, _ = sock.recvfrom(1500)
                 if "200 OK" not in data.decode():
                     print('auth register answer:', data.decode())
                     print("[-] REGISTER failed")
@@ -270,6 +288,12 @@ if __name__ == '__main__':
                 sock.sendto(data_to_send, (sip_cfg['sip_server_addr'], sip_cfg['sip_server_port']))
                 continue
             
+            if answer_type[2] == 'continue':
+                print(f'current state: {answer_type[0]}, waiting next message')
+                print('response:', response)
+                continue
+            
+            
             if answer_type[2] == 'error':
                 print(f"[-] Error response {answer_type[0]}. Exiting")
                 sock.close()
@@ -281,11 +305,10 @@ if __name__ == '__main__':
                 exit()
             
             if answer_type[2] == 'success':
-                # ACK send logic here
+                data_to_send = create_ack_header().encode()
+                print('sending ack data: \n', str(data_to_send).replace('\\r\\n', '\n'))
+                sock.sendto(data_to_send, (sip_cfg['sip_server_addr'], sip_cfg['sip_server_port']))
                 break
-        
-            if answer_type[2] == 'continue':
-                pass
 
 
         time.sleep(5)
