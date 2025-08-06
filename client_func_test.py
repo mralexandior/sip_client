@@ -26,6 +26,16 @@ sip_cfg['contact'] = f'sip:{sip_cfg["username"]}@{sip_cfg["local_ip"]}:{sip_cfg[
 sip_cfg['uri_register'] = f'sip:{sip_cfg["sip_server_addr"]}:{sip_cfg["sip_server_port"]}'
 sip_cfg['uri_invite'] = f'sip:{sip_cfg['to_user']}@{sip_cfg["sip_server_addr"]}'
 
+current_auth = {
+    'realm': '',
+    'nonce': '',
+    'cnonce': '',
+    'opaque': '',
+    'nc': 0,
+    'algorithm': 'MD5',
+    'response': ''
+}
+
 
 def create_sdp():
     res = []
@@ -50,6 +60,25 @@ def extract_auth_params(response):
     if not auth_line:
         return None
     return dict(re.findall(r'(\w+)="([^"]+)"', auth_line.group(1)))
+
+
+def create_auth_headers() -> str:
+    response = calculate_response(sip_cfg['username'], sip_cfg['password'], current_auth['realm'], 
+                                      'REGISTER', sip_cfg['uri_register'], current_auth['nonce'])
+    cnonce = hashlib.md5(f"{sip_cfg['username']}:{realm}:{sip_cfg['password']}".encode()).hexdigest()
+    nc = str(sip_cfg['cseq']).zfill(8)
+    res = []
+    res.append(f'Authorization: Digest username="{sip_cfg["username"]}"')
+    res.append(f'realm="{current_auth['realm']}"')
+    res.append(f'nonce="{current_auth['nonce']}"')
+    res.append(f'uri="{sip_cfg["uri_register"]}"')
+    res.append(f'response="{response}"')
+    res.append(f'cnonce="{cnonce}"')
+    res.append(f'nc="{nc}"')
+    res.append('qop=auth')
+    res.append(f'opaque="{current_auth['opaque']}"')
+    res.append('algorithm=MD5')
+    return ','.join(res)
 
 
 def create_register_header(nonce=None, realm=None):
