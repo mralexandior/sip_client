@@ -65,7 +65,7 @@ def extract_auth_params(response):
 def create_auth_headers() -> str:
     response = calculate_response(sip_cfg['username'], sip_cfg['password'], current_auth['realm'], 
                                       'REGISTER', sip_cfg['uri_register'], current_auth['nonce'])
-    cnonce = hashlib.md5(f"{sip_cfg['username']}:{realm}:{sip_cfg['password']}".encode()).hexdigest()
+    cnonce = hashlib.md5(f"{sip_cfg['username']}:{current_auth['realm']}:{sip_cfg['password']}".encode()).hexdigest()
     nc = str(sip_cfg['cseq']).zfill(8)
     res = []
     res.append(f'Authorization: Digest username="{sip_cfg["username"]}"')
@@ -81,10 +81,8 @@ def create_auth_headers() -> str:
     return ','.join(res)
 
 
-def create_register_header(nonce=None, realm=None):
+def create_register_header():
     res = []
-    response = ''
-
     res.append(f'REGISTER sip:{sip_cfg["sip_server_addr"]} SIP/2.0')
     res.append(f'Via: SIP/2.0/UDP {sip_cfg["local_ip"]}:{sip_cfg["local_port"]};branch={sip_cfg["branch"]}-reg')
     res.append('Max-Forwards: 70')
@@ -98,34 +96,16 @@ def create_register_header(nonce=None, realm=None):
     # res.append('Supported: replaces')
     res.append('User-Agent: PythonScript')
 
-    if nonce and realm:
+    if current_auth['nonce'] and current_auth['realm']:
         print("using auth..")
-        response = calculate_response(sip_cfg['username'], sip_cfg['password'], realm, 
-                                      'REGISTER', sip_cfg['uri_register'], nonce)
-        
-        cnonce = hashlib.md5(f"{sip_cfg['username']}:{realm}:{sip_cfg['password']}".encode()).hexdigest()
-        nc = str(sip_cfg['cseq']).zfill(8)
-        auth_header = f'Authorization: Digest username="{sip_cfg["username"]}"'
-        auth_header += f',realm="{realm}"'
-        auth_header += f',nonce="{nonce}"'
-        auth_header += f',uri="{sip_cfg["uri_register"]}"'
-        auth_header += f',response="{response}"'
-        # auth_header += f',cnonce="{cnonce}"'
-        # auth_header += f',nc={nc}'
-        # auth_header += ',qop=auth'
-        # auth_header += f',opaque="{opaque}"'
-        auth_header += f',algorithm=MD5'
-
+        auth_header = create_auth_headers()
         res.append(auth_header)
         res.append('Content-Length: 0\r\n')
-
     return '\r\n'.join(res)
     
 
-def create_invite_header(nonce=None, realm=None):
+def create_invite_header(nonce:str =None, realm:str =None):
     res = []
-    response = ''
-
     res.append(f'INVITE {sip_cfg["uri_invite"]} SIP/2.0')
     res.append(f'Via: SIP/2.0/UDP {sip_cfg["local_ip"]}:{sip_cfg["local_port"]};branch={sip_cfg["branch"]}')
     res.append('Max-Forwards: 70')
@@ -138,30 +118,15 @@ def create_invite_header(nonce=None, realm=None):
 
     if nonce and realm:
         print("using auth..")
-        response = calculate_response(sip_cfg['username'], sip_cfg['password'], realm,
-                                       'INVITE', sip_cfg['uri_invite'], nonce)
-        
-        cnonce = hashlib.md5(f"{sip_cfg['username']}:{realm}:{sip_cfg['password']}".encode()).hexdigest()
-        nc = str(sip_cfg['cseq']).zfill(8)
-        auth_header = f'Authorization: Digest username="{sip_cfg["username"]}"'
-        auth_header += f',realm="{realm}"'
-        auth_header += f',nonce="{nonce}"'
-        auth_header += f',uri="{sip_cfg["uri_invite"]}"'
-        auth_header += f',response="{response}"'
-        # auth_header += f',cnonce="{cnonce}"'
-        # auth_header += f',nc={nc}'
-        # auth_header += ',qop=auth'
-        # auth_header += f',opaque="{opaque}"'
-        auth_header += f',algorithm=MD5'
-
+        auth_header = create_auth_headers()
         res.append(auth_header)
         res.append(f'Content-Length: {len(sdp)}\r\n')
         res.append(sdp)
-
     return '\r\n'.join(res)
     
 
 def create_bye_header():
+    auth_headers = create_auth_headers()
     res = []
     res.append(f'BYE sip:{sip_cfg["sip_server_addr"]}:{sip_cfg["sip_server_port"]} SIP/2.0')
     res.append(f'Via: SIP/2.0/UDP {sip_cfg["local_ip"]}:{sip_cfg["local_port"]};branch={sip_cfg["branch"]}')
@@ -171,6 +136,7 @@ def create_bye_header():
     res.append(f'Call-ID: {call_id}')
     res.append(f'CSeq: {sip_cfg["cseq"]} BYE')
     res.append('User-Agent: PythonScript')
+    # res.append(auth_headers)
     res.append('Content-Length: 0')
 
     return '\r\n'.join(res)
@@ -293,12 +259,12 @@ if __name__ == '__main__':
                     print("[-] Failed to extract nonce/realm")
                     sock.close()
                     exit()
-                nonce = auth_params['nonce']
-                realm = auth_params['realm']
-                opaque = auth_params['opaque']
+                current_auth['nonce'] = auth_params['nonce']
+                current_auth['realm'] = auth_params['realm']
+                current_auth['opaque'] = auth_params['opaque']
                 sip_cfg['cseq'] += 1
                 print("[+] Sending REGISTER with auth...")
-                data_to_send = create_register_header(nonce, realm).encode()
+                data_to_send = create_register_header().encode()
                 print('sending data:\n', str(data_to_send).replace('\\r\\n', '\n'))
                 sock.sendto(data_to_send, (sip_cfg['sip_server_addr'], sip_cfg['sip_server_port']))
                 data, _ = sock.recvfrom(1500)
