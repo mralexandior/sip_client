@@ -26,6 +26,9 @@ register_params = {
     'local_port': 5066,
     'username': '1000',
     'password': '1000',
+    'nonce': '',
+    'realm': '',
+    'tag_from': ''
 }
 
 sip_cfg['contact'] = f'sip:{register_params["username"]}@{register_params["local_ip"]}:{register_params["local_port"]}'
@@ -42,7 +45,12 @@ current_auth = {
     'algorithm': 'MD5',
     'response': ''
 }
-is_registered = False
+
+global_vars = {
+    'last_answer': '',
+    'is_registered': False
+}
+
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind((register_params['local_ip'], register_params['local_port']))
 sock.settimeout(8)
@@ -92,22 +100,22 @@ def create_auth_header(method: str) -> str:
     return ','.join(res)
 
 
-def create_register_header():
+def create_register_header(call_id):
     res = []
     res.append(f'REGISTER sip:{register_params["sip_server_addr"]} SIP/2.0')
     res.append(f'Via: SIP/2.0/UDP {register_params["local_ip"]}:{register_params["local_port"]};branch={sip_cfg["branch"]}-reg')
     res.append('Max-Forwards: 70')
     res.append(f'To: <sip:{register_params["username"]}@{register_params["sip_server_addr"]}>')
-    res.append(f'From: <sip:{register_params["username"]}@{register_params["sip_server_addr"]}>;tag={sip_cfg["tag_from"]}')
-    res.append(f'Call-ID: {call_id}')
-    res.append(f'CSeq: {sip_cfg["cseq"]} REGISTER')
+    res.append(f'From: <sip:{register_params["username"]}@{register_params["sip_server_addr"]}>;tag={register_params["tag_from"]}')
+    res.append(call_id)
+    res.append(f'CSeq: {register_params["cseq"]} REGISTER')
     res.append(f'Contact: <{sip_cfg["contact"]}>;expires=3600')
     # res.append('Expires: 300')
     # res.append('Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REGISTER, SUBSCRIBE, NOTIFY, REFER, INFO, MESSAGE')
     # res.append('Supported: replaces')
     res.append('User-Agent: PythonScript')
 
-    if current_auth['nonce'] and current_auth['realm']:
+    if register_params['nonce'] and register_params['realm']:
         print("using auth..")
         auth_header = create_auth_header('REGISTER')
         res.append(auth_header)
@@ -248,10 +256,50 @@ def extract_answer_values(answer):
 
 def register():
     call_id = hashlib.md5(f"{sip_cfg['call_id']},{time.time()}".encode()).hexdigest()
-    register_header = []
-    register_header.append(f'REGISTER sip:{register_params["sip_server_addr"]} SIP/2.0')
-    register_header.append()
-    pass
+    register_params['tag_from'] = str(random.randint(1000, 9999))
+    
+    print('sending initial reg..\n')
+    register_params['nonce'] = ''
+    register_params['realm'] = ''
+    data_to_send = create_register_header(call_id)
+    send_sip_message(data_to_send)
+
+    try:
+        while(True):
+            time.sleep(2)
+            answer = receive_sip_message
+            global_vars['last_answer'] = answer
+            answer_type = get_answer_type(answer)
+            if answer_type[0] == '401 Unauthorized':
+                register_params['cseq'] += 1
+                auth_params = extract_auth_params(answer)
+                if not auth_params:
+                    print("[-] Failed to extract nonce/realm")
+                    sock.close()
+                    exit()
+                register_params['nonce'] = auth_params['nonce']
+                register_params['realm'] = auth_params['realm']
+                print('sending auth register..\n')
+                data_to_send = create_register_header(call_id)
+                send_sip_message(data_to_send)
+                time.sleep(1)
+                answer = receive_sip_message()
+                global_vars['last_answer'] = answer
+                answer_type = get_answer_type(answer)
+                if '200 OK' not in answer:
+                    print("[-] REGISTER failed")
+                    sock.close()
+                    exit()
+                else:
+                    print("[V] REGISTER successful\n\n")
+                    global_vars['is_registered'] = True
+                    break
+            else:
+                print('unexpected answer')
+                sock.close()
+                exit()
+    except socket.timeout:
+        print("[-] No response from server (socket timeout)")
 
 
 def invite(dest_user):
@@ -307,115 +355,75 @@ def publish():
 
 
 def send_sip_message(data) -> None:
-    sock.sendto(data, (register_params['sip_server_addr'], register_params['sip_server_port']))
+    print('sending data:\n', str(data).replace('\\r\\n', '\n'), '\n\n')
+    sock.sendto(data.encode(), (register_params['sip_server_addr'], register_params['sip_server_port']))
 
 
 def receive_sip_message():
     data, _ = sock.recvfrom(1500)
-    return data.decode()
+    res = data.decode()
+    print('answer message:\n', str(res).replace('\\r\\n', '\n'), '\n\n')
+    return res
 
 
 if __name__ == '__main__':
     sdp = create_sdp()
-    call_id = hashlib.md5(f"{sip_cfg['call_id']},{time.time()}".encode()).hexdigest()
-    sip_cfg['tag_from'] = str(random.randint(1000, 9999))
+    #call_id = hashlib.md5(f"{sip_cfg['call_id']},{time.time()}".encode()).hexdigest()
+    #sip_cfg['tag_from'] = str(random.randint(1000, 9999))
 
-    print("[+] Sent initial REGISTER")
-    data_to_send = create_register_header().encode()
-    print('sending initial data:\n', str(data_to_send).replace('\\r\\n', '\n'), '\n\n')
-    sock.sendto(data_to_send, (register_params['sip_server_addr'], register_params['sip_server_port']))
-
-    try:
-        while(True):
-            time.sleep(2)
+    register()
+    
+    while(True):
+        if global_vars['is_registered']:
+            print("[-] Sending initial INVITE...\n")
+            current_auth['nonce'] = ''
+            current_auth['realm'] = ''
+            # call_id = hashlib.md5(f"{sip_cfg['call_id']},{time.time()}".encode()).hexdigest()
+            data_to_send = create_invite_header().encode()
+            print("sending initial invite data:\n", str(data_to_send).replace('\\r\\n', '\n'))
+            sock.sendto(data_to_send, (register_params['sip_server_addr'], register_params['sip_server_port']))
             data, _ = sock.recvfrom(1500)
             answer = data.decode()
-            print("[<<] answer message:\n", answer)
-            answer_type = get_answer_type(answer)
-
-            if answer_type[0] == '401 Unauthorized':
-                is_registered = False
-                sip_cfg['cseq'] += 1
-                auth_params = extract_auth_params(answer)
-                if not auth_params:
-                    print("[-] Failed to extract nonce/realm")
-                    sock.close()
-                    exit()
-                current_auth['nonce'] = auth_params['nonce']
-                current_auth['realm'] = auth_params['realm']
-                current_auth['opaque'] = auth_params['opaque']
-                sip_cfg['cseq'] += 1
-                print("[+] Sending REGISTER with auth...")
-                data_to_send = create_register_header().encode()
-                print('sending data:\n', str(data_to_send).replace('\\r\\n', '\n'), '\n\n')
-                sock.sendto(data_to_send, (register_params['sip_server_addr'], register_params['sip_server_port']))
-                data, _ = sock.recvfrom(1500)
-                answer = data.decode()
-                print("[<<] answer message:\n", answer, '\n\n')
-
-                if "200 OK" not in answer:
-                    print("[-] REGISTER failed")
-                    sock.close()
-                    exit()
-                else:
-                    print("[V] REGISTER successful\n\n")
-                    is_registered = True
-
-                if is_registered:
-                    print("[-] Sending initial INVITE...\n")
-                    current_auth['nonce'] = ''
-                    current_auth['realm'] = ''
-                    # call_id = hashlib.md5(f"{sip_cfg['call_id']},{time.time()}".encode()).hexdigest()
-                    data_to_send = create_invite_header().encode()
-                    print("sending initial invite data:\n", str(data_to_send).replace('\\r\\n', '\n'))
-                    sock.sendto(data_to_send, (register_params['sip_server_addr'], register_params['sip_server_port']))
-                    data, _ = sock.recvfrom(1500)
-                    answer = data.decode()
-                    print("[<<] answer message:\n", answer, '\n\n')
-                    print("[-] Sending auth INVITE...\n")
-                    auth_params = extract_auth_params(answer)
-                    current_auth['nonce'] = auth_params['nonce']
-                    current_auth['realm'] = auth_params['realm']
-                    sip_cfg['cseq'] += 1
-                    data_to_send = create_invite_header().encode()
-                    print("sending initial invite data:\n", str(data_to_send).replace('\\r\\n', '\n'))
-                    sock.sendto(data_to_send, (register_params['sip_server_addr'], register_params['sip_server_port']))
-                    continue
-                else:
-                    print('stopping due to register failure')
-                    sock.close()
-                    exit()
-            
-            if answer_type[2] == 'continue':
-                print(f'current state: {answer_type[0]}, waiting next message')
-                print('answer:', answer)
-                continue
-            
-            
-            if answer_type[2] == 'error':
-                print(f"[-] Error answer {answer_type[0]}. Exiting")
-                sock.close()
-                exit()
+            print("[<<] answer message:\n", answer, '\n\n')
+            print("[-] Sending auth INVITE...\n")
+            auth_params = extract_auth_params(answer)
+            current_auth['nonce'] = auth_params['nonce']
+            current_auth['realm'] = auth_params['realm']
+            sip_cfg['cseq'] += 1
+            data_to_send = create_invite_header().encode()
+            print("sending initial invite data:\n", str(data_to_send).replace('\\r\\n', '\n'))
+            sock.sendto(data_to_send, (register_params['sip_server_addr'], register_params['sip_server_port']))
+            continue
+        else:
+            print('stopping due to register failure')
+            sock.close()
+            exit()
         
-            if answer_type[2] == 'unk':
-                print(f"[-] Unexpected answer {answer_type[0]}. Exiting")
-                sock.close()
-                exit()
-            
-            if answer_type[2] == 'success':
-                data_to_send = create_ack_header().encode()
-                print('sending ack data: \n', str(data_to_send).replace('\\r\\n', '\n'))
-                sock.sendto(data_to_send, (register_params['sip_server_addr'], register_params['sip_server_port']))
-                break
+        if answer_type[2] == 'continue':
+            print(f'current state: {answer_type[0]}, waiting next message')
+            print('answer:', answer)
+            continue
+        
+        
+        if answer_type[2] == 'error':
+            print(f"[-] Error answer {answer_type[0]}. Exiting")
+            sock.close()
+            exit()
+    
+        if answer_type[2] == 'unk':
+            print(f"[-] Unexpected answer {answer_type[0]}. Exiting")
+            sock.close()
+            exit()
+        
+        if answer_type[2] == 'success':
+            data_to_send = create_ack_header().encode()
+            print('sending ack data: \n', str(data_to_send).replace('\\r\\n', '\n'))
+            sock.sendto(data_to_send, (register_params['sip_server_addr'], register_params['sip_server_port']))
+            break
 
 
-        time.sleep(5)
-        print("[+] Sending BYE ...")
-        data_to_send = create_bye_header().encode()
-        print("sending BYE data:\n", str(data_to_send).replace('\\r\\n', '\n'))
-        sock.sendto(data_to_send, (register_params['sip_server_addr'], register_params['sip_server_port']))
-
-    except socket.timeout:
-        print("[-] No response from server (socket timeout)")
-    finally:
-        sock.close()
+    time.sleep(5)
+    print("[+] Sending BYE ...")
+    data_to_send = create_bye_header().encode()
+    print("sending BYE data:\n", str(data_to_send).replace('\\r\\n', '\n'))
+    sock.sendto(data_to_send, (register_params['sip_server_addr'], register_params['sip_server_port']))
