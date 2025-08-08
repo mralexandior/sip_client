@@ -48,7 +48,8 @@ current_auth = {
 
 global_vars = {
     'last_answer': '',
-    'is_registered': False
+    'is_registered': False,
+    'incoming_cseq': 0
 }
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -147,7 +148,7 @@ def create_invite_header(call_id, dest_user):
     return '\r\n'.join(res)
     
 
-def create_bye_header():
+def create_bye_header(call_id):
     auth_headers = create_auth_header('BYE')
     res = []
     res.append(f'BYE sip:{register_params["sip_server_addr"]}:{register_params["sip_server_port"]} SIP/2.0')
@@ -164,12 +165,14 @@ def create_bye_header():
     return '\r\n'.join(res)
 
 
-def create_ack_header():
+def create_ack_header(dest_user: str, call_id: str):
     res = []
     res.append(f'ACK sip:{register_params["username"]}@{register_params["local_ip"]}:{register_params["local_port"]} SIP/2.0')
     res.append(f'Via: SIP/2.0/UDP {register_params["sip_server_addr"]}:{register_params["sip_server_port"]}') # rport, branch
     res.append(f'From: <sip:{sip_cfg["to_user"]}@{register_params["sip_server_addr"]}>;tag={sip_cfg["tag_from"]}')
-    res.append(f'To: <sip:')
+    res.append(f'To: <sip:{dest_user}@{register_params["sip_server_addr"]}') #to tag needed
+    res.append(f'Call-ID: {call_id}')
+    res.append(f'CSeq: {global_vars["incoming_cseq"]} ACK')
 
     return '\r\n'.join(res)
 
@@ -211,7 +214,7 @@ def get_answer_type(answer_data):
         '421 Extension Required': ['end', 'error', 'stop'],
         '423 Interval To Brief': ['end', 'error', 'stop'],
         '480 Temporarily Unavailable': ['end', 'error', 'stop'],
-        '481 Call/Transaction Does Not Exist': ['end', 'error', 'stop'],
+        '481 Call Leg/Transaction Does Not Exist': ['end', 'error', 'stop'],
         '482 Loop Detected': ['end', 'error', 'stop'],
         '483 Too Many Hops': ['end', 'error', 'stop'],
         '484 Address Incomplete': ['end', 'error', 'stop'],
@@ -238,13 +241,18 @@ def get_answer_type(answer_data):
         'OPTIONS': ['end', 'success', 'need ACK']
     }
 
-    for i in code_types.keys():
-        if i in answer_data:
-            return [i] + code_types[i]
+    if str(answer_data).startswith('SIP'):
+        for i in code_types.keys():
+            if i in answer_data:
+                return [i] + code_types[i]
     return [0] + ['unk', 'unk', 'stop']
 
 
-def extract_answer_values(answer):
+def get_request_type():
+    pass
+
+
+def extract_answer_headers(answer):
     headers_list = answer.split('\r\n')
     res = {}
     for n, header in enumerate(headers_list):
@@ -253,6 +261,43 @@ def extract_answer_values(answer):
         else:
             items = re.split(r'^(.+):\s(.+)', header)
         res[items[1]] = items[2]
+    return res
+
+
+def parse_combined_header_values(key_name: str, value: str):
+    res = {}
+    if ';' in value:
+        split_value = value.split(';')
+        for val in split_value:
+            if '=' in val:
+                split_val = val.split('=')
+                res[f'{key_name}_{split_val[0]}'] = split_val[1]
+            else:
+                res[f'{key_name}_{val}'] = ''
+    else:
+        res[f'{key_name}_raw'] = value
+    return res
+
+
+def extract_message_values(inc_data: dict):
+    res = {}
+    for key in inc_data.keys():
+        key = str(key).lower()
+        match key:
+            case 'via':
+                for k, v in parse_combined_header_values(key, inc_data[key]).items():
+                    res[k] = v
+            case 'from':
+
+                pass
+            case 'to':
+                pass
+            case 'cseq':
+                split_message = inc_data[key].split(' ')
+                if len(split_message) == 2:
+                    res['cseq'], res['cseq_message_type'] = split_message
+            
+            
     return res
 
 
